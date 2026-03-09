@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma
+    container_name: chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma_data:/chroma/chroma
+    restart: unless-stopped
+
+  backend:
+    build: .
+    container_name: harvey_backend
+    ports:
+      - "8080:8080"
+    depends_on:
+      - chromadb
+      - ollama
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: harvey_frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  ollama_data:

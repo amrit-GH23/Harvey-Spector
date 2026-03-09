@@ -1,0 +1,34 @@
+# environment
+.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# database
+chroma_data/
+
+# node
+node_modules/
+
+# build
+dist/
+build/
+
+# vscode
+.vscode/
+
+# idea
+.idea/

@@ -1,252 +1,226 @@
-⚖️ Harvey Spector — Indian Constitution RAG Assistant
+# ⚖️ Harvey Spector — Indian Constitution RAG Assistant
 
-Harvey Spector is a local AI legal assistant that allows users to query the Constitution of India (Articles 1–35) using natural language.
+A local **AI legal assistant** that answers natural‑language questions about the **Constitution of India (Articles 1–35)** using a **Retrieval‑Augmented Generation (RAG)** pipeline. Responses are grounded in constitutional text and include citations.
 
-The system uses a Retrieval-Augmented Generation (RAG) architecture to retrieve relevant constitutional articles and generate context-aware legal explanations with citations.
+> **Note**: This project runs fully locally using **Docker + Ollama** (no external APIs required).
 
-Unlike generic LLM responses, answers are grounded in actual constitutional text, reducing hallucinations.
+## 🚀 Features
 
-The entire system runs locally using Docker + Ollama, requiring no external APIs.
+- 🔎 Semantic search over Constitution Articles **1–35**
+- ⚖️ Grounded legal answers with article references
+- 🧠 Local LLM inference with **Ollama**
+- 📚 Vector search with **ChromaDB**
+- ⚡ **FastAPI** backend API
+- 💻 **React** frontend
+- 🐳 Dockerized LLM + vector database
+- 🧩 **LangChain**-based RAG pipeline
+- 🔒 Fully local (no cloud dependencies)
 
-🚀 Features
+## 🧠 How it works
 
-🔎 Semantic Search over Constitution Articles (1–35)
+1. **Data ingestion**
+   - Loads articles from `COI.json`
+   - Chunks and embeds the text
+2. **Vector storage**
+   - Stores embeddings in **ChromaDB**
+3. **Query processing**
+   - Embeds the user query
+   - Retrieves the most relevant articles
+4. **Answer generation**
+   - Sends retrieved context to the Ollama LLM
+   - Returns an answer with citations
 
-⚖️ Grounded legal answers with article references
+## 🏗️ System architecture
 
-🧠 Local LLM inference using Ollama
-
-📚 Vector search with ChromaDB
-
-⚡ FastAPI backend API
-
-💻 React frontend interface
-
-🐳 Dockerized LLM + Vector DB
-
-🧩 LangChain-based RAG pipeline
-
-🔒 Fully local (no OpenAI or cloud dependencies)
-
-🧠 How It Works
-
-The system follows a Retrieval-Augmented Generation pipeline:
-
-1️⃣ Data Ingestion
-
-Constitution articles are loaded from COI.json
-
-Articles are chunked and embedded
-
-2️⃣ Vector Storage
-
-Embeddings are stored in ChromaDB
-
-3️⃣ Query Processing
-
-User query is converted into embeddings
-
-Similar constitutional articles are retrieved
-
-4️⃣ Answer Generation
-
-Retrieved articles are passed to the Ollama LLM
-
-The model synthesizes a legally grounded response
-
-🏗 System Architecture
+```text
 User (React Frontend)
-        │
-        ▼
+        |
+        v
 FastAPI Backend
-        │
-        ▼
+        |
+        v
 LangChain RAG Pipeline
-        │
-        ▼
+        |
+        v
 ChromaDB Vector Search
-        │
-        ▼
+        |
+        v
 Relevant Articles Retrieved
-        │
-        ▼
+        |
+        v
 Ollama LLM (llama3.1:8b)
-        │
-        ▼
+        |
+        v
 Legal Response with Citations
-🛠 Tech Stack
-Layer	Technology
-Frontend	React
-Backend	FastAPI
-LLM Framework	LangChain
-Local LLM	Ollama
-Vector Database	ChromaDB
-Containerization	Docker
-Language	Python
-📂 Project Structure
+```
+
+## 🛠️ Tech stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React |
+| Backend | FastAPI |
+| LLM Framework | LangChain |
+| Local LLM | Ollama |
+| Vector Database | ChromaDB |
+| Containerization | Docker |
+| Language | Python |
+
+## 📂 Project structure
+
+```text
 Harvey-Spector/
-│
-├── COI.json                # Constitution Articles Dataset (1–35)
-├── requirements.txt
-├── .env
 ├── .gitignore
-│
 ├── frontend/               # React UI
-│
-└── app/
-    ├── config.py           # Environment configuration
-    ├── ingest.py           # Data ingestion and embeddings
-    ├── rag.py              # Retrieval + generation pipeline
-    └── main.py             # FastAPI API server
-⚙️ Prerequisites
+├── backend/                # server
+├── docker-compose.yml
+├──Readme.md
 
-Before running the project, install:
+```
 
-Python 3.10+
+## ⚙️ Prerequisites
 
-Node.js
+- Python **3.10+**
+- Node.js
+- Docker
+- Docker Compose (optional)
 
-Docker
+## Manual setup
+## 🐳 Start Ollama (Docker) 
 
-Docker Compose (optional)
-
-🐳 Start Ollama (Docker)
-
-Run Ollama locally using Docker:
-
+```bash
 docker run -d \
--p 11434:11434 \
--v ollama:/root/.ollama \
---name ollama \
-ollama/ollama
+  -p 11434:11434 \
+  -v ollama:/root/.ollama \
+  --name ollama \
+  ollama/ollama
+```
 
 Pull the model:
 
+```bash
 docker exec -it ollama ollama pull llama3.1:8b
+```
 
 Verify:
 
+```bash
 docker exec -it ollama ollama list
-🐳 Start ChromaDB
+```
 
-Using Docker:
+## 🐳 Start ChromaDB
 
+```bash
 docker run -d \
--p 8000:8000 \
---name chromadb \
-chromadb/chroma
-📦 Backend Setup
+  -p 8000:8000 \
+  --name chromadb \
+  chromadb/chroma
+```
 
-Create virtual environment:
+## 📦 Backend setup
 
+Create and activate a virtual environment:
+
+```bash
 python -m venv venv
+```
 
-Activate:
+Windows:
 
-Windows
-
+```bash
 venv\Scripts\activate
+```
 
-Linux / Mac
+Linux / macOS:
 
+```bash
 source venv/bin/activate
+```
 
 Install dependencies:
 
+```bash
 pip install -r requirements.txt
-📚 Ingest Constitution Articles
+```
 
-Run ingestion once to embed the dataset.
+### 📚 Ingest constitution articles
 
+Run ingestion once to embed the dataset (Articles 1–35) and store it in ChromaDB:
+
+```bash
 python -m app.ingest
+```
 
-This creates embeddings for Articles 1–35 and stores them in ChromaDB.
+### ▶️ Run backend API
 
-▶️ Run Backend API
+```bash
 uvicorn app.main:app --reload --port 8080
+```
 
-API docs available at:
+API docs:
 
-http://localhost:8080/docs
-💻 Frontend Setup
+- http://localhost:8080/docs
 
-Navigate to frontend:
+## 💻 Frontend setup
 
+```bash
 cd frontend
-
-Install dependencies:
-
 npm install
-
-Run development server:
-
 npm run dev
+```
 
-Frontend will run on:
+Frontend runs on:
 
-http://localhost:5173
-🧪 Example Query
+- http://localhost:5173
 
-Request
+## 🧪 Example query
 
-POST /query
+**Request** (`POST /query`):
 
-Example:
-
+```json
 {
- "query": "What does the constitution say about equality?"
+  "query": "What does the constitution say about equality?"
 }
+```
 
-Response:
+**Response**:
 
+```json
 {
- "answer": "Article 14 guarantees equality before the law and equal protection of the laws within the territory of India.",
- "sources": [
-  {
-   "article_no": "14",
-   "title": "Equality before law",
-   "part": "Part III - Fundamental Rights"
-  }
- ]
+  "answer": "Article 14 guarantees equality before the law and equal protection of the laws within the territory of India.",
+  "sources": [
+    {
+      "article_no": "14",
+      "title": "Equality before law",
+      "part": "Part III - Fundamental Rights"
+    }
+  ]
 }
-🎯 Use Cases
+```
 
-Legal research assistants
+## 🎯 Use cases
 
-Law student study tools
+- Legal research assistants
+- Law student study tools
+- Civic education platforms
+- AI-powered legal search
+- Constitutional question answering
 
-Civic education platforms
+## ⚠️ Limitations
 
-AI-powered legal search
+- Currently supports Articles **1–35** only
+- Does not include case law or legal interpretation
+- Not a substitute for professional legal advice
 
-Constitutional question answering
+## 🔮 Future improvements
 
-⚠️ Limitations
+- Add the entire Constitution dataset
+- Case law retrieval
+- Better ranking of legal citations
+- Streaming responses
+- Authentication + deployment
+- Multi-document legal RAG
 
-Currently supports Articles 1–35 only
-
-Does not include case law or legal interpretation
-
-Not a substitute for professional legal advice
-
-🔮 Future Improvements
-
-Add entire Constitution dataset
-
-Case law retrieval
-
-Better ranking of legal citations
-
-Streaming responses
-
-Authentication + deployment
-
-Multi-document legal RAG
-
-🧪 Built With
-
-This project was prototyped using Antigravity for rapid AI-assisted development while implementing a custom architecture and idea.
-
-📜 License
+## 📜 License
 
 MIT License

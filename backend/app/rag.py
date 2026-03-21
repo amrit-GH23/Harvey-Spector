@@ -46,7 +46,7 @@ def get_legal_advice(user_query: str) -> dict:
       4. Return { answer, sources }
     """
     # Step 1 — Retrieve
-    docs = _get_vectorstore().similarity_search(user_query, k=3)
+    docs = _get_vectorstore().similarity_search(user_query, k=5)
 
     if not docs:
         return {"answer": "No relevant articles found.", "sources": []}

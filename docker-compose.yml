@@ -22,7 +22,7 @@ services:
 
   backend:
     build: ./backend
-    container_name: harvey_backend
+    container_name: jolly_backend
     ports:
       - "8080:8080"
     depends_on:
@@ -37,7 +37,7 @@ services:
 
   frontend:
     build: ./frontend
-    container_name: harvey_frontend
+    container_name: jolly_frontend
     ports:
       - "5173:5173"
     depends_on:

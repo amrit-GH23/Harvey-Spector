@@ -1,4 +1,4 @@
-# ⚖️ Harvey Spector — Indian Constitution RAG Assistant
+# ⚖️ Jolly LLB — Indian Constitution RAG Assistant
 
 A local **AI legal assistant** that answers natural‑language questions about the **Constitution of India (Articles 1–35)** using a **Retrieval‑Augmented Generation (RAG)** pipeline. Responses are grounded in constitutional text and include citations.
 
@@ -15,6 +15,7 @@ A local **AI legal assistant** that answers natural‑language questions about t
 - 🐳 Dockerized LLM + vector database
 - 🧩 **LangChain**-based RAG pipeline
 - 🔒 Fully local (no cloud dependencies)
+- 🎯 **Out-of-scope detection** — gracefully handles irrelevant queries
 
 ## 🧠 How it works
 
@@ -26,6 +27,8 @@ A local **AI legal assistant** that answers natural‑language questions about t
 3. **Query processing**
    - Embeds the user query
    - Retrieves the most relevant articles
+   - **Cross-encoder reranking** scores relevance
+   - Out-of-scope queries are detected and handled gracefully
 4. **Answer generation**
    - Sends retrieved context to the Ollama LLM
    - Returns an answer with citations
@@ -46,6 +49,9 @@ ChromaDB Vector Search
         |
         v
 Relevant Articles Retrieved
+        |
+        v
+Cross-Encoder Reranker (Out-of-scope detection)
         |
         v
 Ollama LLM (llama3.1:8b)
@@ -69,7 +75,7 @@ Legal Response with Citations
 ## 📂 Project structure
 
 ```text
-Harvey-Spector/
+Jolly-LLB/
 ├── .gitignore
 ├── frontend/               # React UI
 ├── backend/                # server

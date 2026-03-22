@@ -151,7 +151,7 @@ pip install -r requirements.txt
 
 ### 📚 Ingest constitution articles
 
-Run ingestion once to embed the dataset (Articles 1–35) and store it in ChromaDB:
+Run ingestion once to embed the dataset and store it in ChromaDB:
 
 ```bash
 python -m app.ingest
@@ -214,7 +214,6 @@ Frontend runs on:
 
 ## ⚠️ Limitations
 
-- Currently supports Articles **1–35** only
 - Does not include case law or legal interpretation
 - Not a substitute for professional legal advice
 

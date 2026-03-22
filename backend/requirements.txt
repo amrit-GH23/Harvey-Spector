@@ -3,7 +3,8 @@ uvicorn[standard]
 langchain
 langchain-community
 langchain-ollama
+langchain-huggingface
 chromadb
 python-dotenv
 rank_bm25
-sentence-transformers
+flashrank

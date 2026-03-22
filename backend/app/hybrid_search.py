@@ -1,85 +1,160 @@
 """
-Jolly LLB — Hybrid Search + Reranking Pipeline
-====================================================
+Jolly LLB — Multi-Collection Hybrid Search + Reranking Pipeline
+=================================================================
+Searches across ALL legal collections (Constitution, BNS, BNSS, BSA).
+
+Optimized for speed:
+  - bge-small-en-v1.5 embeddings (HuggingFace, 33MB, local)
+  - FlashRank reranker (ONNX, ~4MB, ultra-fast)
+  - BM25 index caching (built once per collection, reused)
+
 Three-stage retrieval:
-
-  1. Metadata-first filter  — Direct article lookup for "Article X" queries
+  1. Metadata-first filter  — Direct article/section lookup
   2. Hybrid search          — BM25 keyword + ChromaDB vector, fused via RRF
-  3. Cross-encoder reranker — Score candidates, keep top 3
-
-Returns parent (full-article) Documents ready for LLM context injection.
+  3. FlashRank reranker     — Score candidates, keep top results
 """
 
 import os
 import re
 
-import chromadb
-from langchain_ollama import OllamaEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
+from flashrank import Ranker, RerankRequest
 
 from app.config import (
-    OLLAMA_BASE_URL,
     EMBED_MODEL,
     CHROMA_COLLECTION,
     CHROMA_PARENT_COLLECTION,
+    CHROMA_BNS_COLLECTION,
+    CHROMA_BNS_PARENT_COLLECTION,
+    CHROMA_BNSS_COLLECTION,
+    CHROMA_BNSS_PARENT_COLLECTION,
+    CHROMA_BSA_COLLECTION,
+    CHROMA_BSA_PARENT_COLLECTION,
     CHROMA_PERSIST_DIR,
     RERANKER_MODEL,
 )
 
+# ── Collection registry ────────────────────────────────────
+COLLECTIONS = [
+    {
+        "child": CHROMA_COLLECTION,
+        "parent": CHROMA_PARENT_COLLECTION,
+        "source_type": "constitution",
+        "label": "Indian Constitution",
+        "id_field": "article_no",
+        "parent_id_prefix": "art_",
+    },
+    {
+        "child": CHROMA_BNS_COLLECTION,
+        "parent": CHROMA_BNS_PARENT_COLLECTION,
+        "source_type": "bns",
+        "label": "BNS (Bharatiya Nyaya Sanhita)",
+        "id_field": "section_no",
+        "parent_id_prefix": "bns_sec_",
+    },
+    {
+        "child": CHROMA_BNSS_COLLECTION,
+        "parent": CHROMA_BNSS_PARENT_COLLECTION,
+        "source_type": "bnss",
+        "label": "BNSS (Bharatiya Nagarik Suraksha Sanhita)",
+        "id_field": "section_no",
+        "parent_id_prefix": "bnss_sec_",
+    },
+    {
+        "child": CHROMA_BSA_COLLECTION,
+        "parent": CHROMA_BSA_PARENT_COLLECTION,
+        "source_type": "bsa",
+        "label": "BSA (Bharatiya Sakshya Adhiniyam)",
+        "id_field": "section_no",
+        "parent_id_prefix": "bsa_sec_",
+    },
+]
+
 # ── Lazy-loaded singletons ──────────────────────────────────
-_reranker: CrossEncoder | None = None
-_child_store: Chroma | None = None
-_parent_store: Chroma | None = None
+_reranker: Ranker | None = None
+_embeddings: HuggingFaceEmbeddings | None = None
+_stores: dict[str, Chroma] = {}
+_bm25_cache: dict[str, tuple[BM25Okapi, list[str], list[dict]]] = {}
 
 
-def _get_reranker() -> CrossEncoder:
-    """Load cross-encoder (cached after first call)."""
+def _get_reranker() -> Ranker:
+    """Load FlashRank reranker (cached after first call)."""
     global _reranker
     if _reranker is None:
-        _reranker = CrossEncoder(RERANKER_MODEL)
+        _reranker = Ranker(model_name=RERANKER_MODEL)
     return _reranker
 
 
-def _get_embeddings() -> OllamaEmbeddings:
-    return OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    """Get HuggingFace embeddings singleton (bge-small-en-v1.5)."""
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = HuggingFaceEmbeddings(
+            model_name=EMBED_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    return _embeddings
 
 
-def _get_child_store() -> Chroma:
-    """Connect to the child-chunks ChromaDB collection."""
-    global _child_store
-    if _child_store is None:
+def _get_store(collection_name: str) -> Chroma:
+    """Connect to a ChromaDB collection (cached after first call)."""
+    if collection_name not in _stores:
         persist_dir = os.path.normpath(CHROMA_PERSIST_DIR)
-        _child_store = Chroma(
+        _stores[collection_name] = Chroma(
             persist_directory=persist_dir,
-            collection_name=CHROMA_COLLECTION,
+            collection_name=collection_name,
             embedding_function=_get_embeddings(),
         )
-    return _child_store
+    return _stores[collection_name]
 
 
-def _get_parent_store() -> Chroma:
-    """Connect to the parent-documents ChromaDB collection."""
-    global _parent_store
-    if _parent_store is None:
-        persist_dir = os.path.normpath(CHROMA_PERSIST_DIR)
-        _parent_store = Chroma(
-            persist_directory=persist_dir,
-            collection_name=CHROMA_PARENT_COLLECTION,
-            embedding_function=_get_embeddings(),
-        )
-    return _parent_store
+def _collection_exists(collection_name: str) -> bool:
+    """Check if a ChromaDB collection actually has data."""
+    try:
+        store = _get_store(collection_name)
+        count = store._collection.count()
+        return count > 0
+    except Exception:
+        return False
+
+
+def _get_bm25_index(collection_name: str) -> tuple[BM25Okapi, list[str], list[dict]] | None:
+    """
+    Get or build BM25 index for a collection (cached after first build).
+    Returns (bm25_index, all_texts, all_metas) or None.
+    """
+    if collection_name in _bm25_cache:
+        return _bm25_cache[collection_name]
+
+    try:
+        store = _get_store(collection_name)
+        all_data = store.get(include=["documents", "metadatas"])
+        all_texts = all_data["documents"]
+        all_metas = all_data["metadatas"]
+
+        if not all_texts:
+            return None
+
+        tokenized_corpus = [doc.lower().split() for doc in all_texts]
+        bm25 = BM25Okapi(tokenized_corpus)
+
+        _bm25_cache[collection_name] = (bm25, all_texts, all_metas)
+        return _bm25_cache[collection_name]
+    except Exception:
+        return None
 
 
 # ── Helper: fetch parent documents by parent_id ─────────────
-def _fetch_parents(parent_ids: list[str]) -> list[Document]:
-    """Retrieve full-article parent documents from the parents collection."""
+def _fetch_parents(parent_ids: list[str], parent_collection: str) -> list[Document]:
+    """Retrieve full-text parent documents from a parent collection."""
     if not parent_ids:
         return []
 
-    store = _get_parent_store()
+    store = _get_store(parent_collection)
     results = store.get(where={"parent_id": {"$in": parent_ids}}, include=["documents", "metadatas"])
 
     docs = []
@@ -94,40 +169,48 @@ def _fetch_parents(parent_ids: list[str]) -> list[Document]:
 
 # ── Stage 1: Metadata-first filter ──────────────────────────
 def _extract_article_number(query: str) -> str | None:
-    """Try to extract an article number from the query (e.g. 'Article 21', 'Art 370')."""
     match = re.search(r"(?:article|art\.?)\s*(\d+[A-Za-z]*)", query, re.IGNORECASE)
     return match.group(1) if match else None
 
 
+def _extract_section_number(query: str) -> str | None:
+    match = re.search(r"(?:section|sec\.?)\s*(\d+[A-Za-z]*)", query, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _metadata_filter(query: str) -> list[Document] | None:
-    """If query references a specific article, fetch it directly from parents."""
+    """If query references a specific article or section, fetch it directly."""
     art_no = _extract_article_number(query)
-    if art_no is None:
-        return None
+    sec_no = _extract_section_number(query)
 
-    store = _get_parent_store()
-    results = store.get(
-        where={"article_no": art_no},
-        include=["documents", "metadatas"],
-    )
-
-    if not results["documents"]:
+    if art_no is None and sec_no is None:
         return None
 
     docs = []
-    for text, meta in zip(results["documents"], results["metadatas"]):
-        docs.append(Document(page_content=text, metadata=meta))
-    return docs
+
+    for coll in COLLECTIONS:
+        if not _collection_exists(coll["parent"]):
+            continue
+
+        store = _get_store(coll["parent"])
+
+        if art_no and coll["source_type"] == "constitution":
+            results = store.get(where={"article_no": art_no}, include=["documents", "metadatas"])
+            for text, meta in zip(results["documents"], results["metadatas"]):
+                meta["source_type"] = coll["source_type"]
+                docs.append(Document(page_content=text, metadata=meta))
+
+        if sec_no and coll["source_type"] != "constitution":
+            results = store.get(where={"section_no": sec_no}, include=["documents", "metadatas"])
+            for text, meta in zip(results["documents"], results["metadatas"]):
+                meta["source_type"] = coll["source_type"]
+                docs.append(Document(page_content=text, metadata=meta))
+
+    return docs if docs else None
 
 
 # ── Stage 2: Hybrid search (BM25 + Vector + RRF) ────────────
-def _reciprocal_rank_fusion(
-    ranked_lists: list[list[str]], k: int = 60
-) -> list[str]:
-    """
-    Reciprocal Rank Fusion across multiple ranked lists of doc IDs.
-    Returns IDs sorted by fused score (highest first).
-    """
+def _reciprocal_rank_fusion(ranked_lists: list[list[str]], k: int = 60) -> list[str]:
     scores: dict[str, float] = {}
     for ranked in ranked_lists:
         for rank, doc_id in enumerate(ranked):
@@ -135,108 +218,138 @@ def _reciprocal_rank_fusion(
     return sorted(scores, key=lambda x: scores[x], reverse=True)
 
 
-def _hybrid_search(query: str, top_k: int = 20) -> list[Document]:
-    """
-    Run BM25 keyword search + ChromaDB vector search on child chunks,
-    then fuse results with Reciprocal Rank Fusion.
-    Returns top_k child chunk Documents.
-    """
-    child_store = _get_child_store()
+def _hybrid_search_single(query: str, child_collection: str, source_type: str, top_k: int = 10) -> list[Document]:
+    """Run BM25 + vector search on a single child collection with cached BM25."""
+    if not _collection_exists(child_collection):
+        return []
+
+    child_store = _get_store(child_collection)
 
     # ── Vector search ──────────────────────────────────────
-    vector_results = child_store.similarity_search(query, k=top_k)
+    try:
+        vector_results = child_store.similarity_search(query, k=top_k)
+    except Exception:
+        vector_results = []
 
-    # ── BM25 keyword search ────────────────────────────────
-    # Fetch all child documents for BM25 corpus
-    all_data = child_store.get(include=["documents", "metadatas"])
-    all_texts = all_data["documents"]
-    all_metas = all_data["metadatas"]
+    # ── BM25 keyword search (CACHED) ───────────────────────
+    bm25_results = []
+    bm25_data = _get_bm25_index(child_collection)
+    if bm25_data:
+        bm25, all_texts, all_metas = bm25_data
+        tokenized_query = query.lower().split()
+        bm25_scores = bm25.get_scores(tokenized_query)
 
-    # Build BM25 index
-    tokenized_corpus = [doc.lower().split() for doc in all_texts]
-    bm25 = BM25Okapi(tokenized_corpus)
-    tokenized_query = query.lower().split()
-    bm25_scores = bm25.get_scores(tokenized_query)
+        bm25_ranked_indices = sorted(
+            range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
+        )[:top_k]
 
-    # Rank by BM25 score (get top_k indices)
-    bm25_ranked_indices = sorted(
-        range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
-    )[:top_k]
+        bm25_results = [
+            Document(page_content=all_texts[i], metadata=all_metas[i])
+            for i in bm25_ranked_indices
+        ]
 
-    bm25_results = [
-        Document(page_content=all_texts[i], metadata=all_metas[i])
-        for i in bm25_ranked_indices
-    ]
+    if not vector_results and not bm25_results:
+        return []
 
     # ── RRF fusion ─────────────────────────────────────────
-    # Create unique IDs for fusion: parent_id + chunk_index
     def _doc_id(doc: Document) -> str:
         m = doc.metadata
-        return f"{m.get('parent_id', '')}_{m.get('chunk_index', 0)}"
+        return f"{source_type}_{m.get('parent_id', '')}_{m.get('chunk_index', 0)}"
 
     vector_ids = [_doc_id(d) for d in vector_results]
     bm25_ids = [_doc_id(d) for d in bm25_results]
-
     fused_order = _reciprocal_rank_fusion([vector_ids, bm25_ids])
 
-    # Build lookup from ID → Document
     doc_lookup: dict[str, Document] = {}
     for doc in vector_results + bm25_results:
         did = _doc_id(doc)
         if did not in doc_lookup:
+            doc.metadata["source_type"] = source_type
             doc_lookup[did] = doc
 
     return [doc_lookup[did] for did in fused_order[:top_k] if did in doc_lookup]
 
 
-# ── Stage 3: Cross-encoder reranking ────────────────────────
-def _rerank(query: str, docs: list[Document], top_k: int = 3) -> list[Document]:
-    """Score documents with cross-encoder and return the top_k best matches."""
+def _multi_collection_hybrid_search(query: str, per_collection_k: int = 10) -> list[Document]:
+    """Run hybrid search across ALL available collections."""
+    all_candidates = []
+    for coll in COLLECTIONS:
+        candidates = _hybrid_search_single(query, coll["child"], coll["source_type"], top_k=per_collection_k)
+        all_candidates.extend(candidates)
+    return all_candidates
+
+
+# ── Stage 3: FlashRank reranking ────────────────────────────
+def _rerank(query: str, docs: list[Document], top_k: int = 5) -> list[Document]:
+    """Score documents with FlashRank and return the top_k best matches."""
     if not docs:
         return []
 
-    reranker = _get_reranker()
-    pairs = [[query, doc.page_content] for doc in docs]
-    scores = reranker.predict(pairs)
+    ranker = _get_reranker()
 
-    scored = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
-    return [doc for doc, _ in scored[:top_k]]
+    # Build passages for FlashRank
+    passages = [{"id": i, "text": doc.page_content} for i, doc in enumerate(docs)]
+    request = RerankRequest(query=query, passages=passages)
+    results = ranker.rerank(request)
+
+    # Map back to documents, sorted by FlashRank score
+    reranked = []
+    for result in results[:top_k]:
+        idx = int(result["id"])
+        reranked.append(docs[idx])
+
+    return reranked
 
 
 # ── Public API ──────────────────────────────────────────────
-def hybrid_retrieve(query: str, final_k: int = 3) -> list[Document]:
+def hybrid_retrieve(query: str, final_k: int = 5) -> list[Document]:
     """
-    Full retrieval pipeline:
-      1. Try metadata-first filter (direct article lookup)
-      2. If no direct match → hybrid search (BM25 + vector + RRF)
-      3. Rerank candidates with cross-encoder
-      4. Map winning child chunks → parent (full article) documents
+    Full multi-collection retrieval pipeline:
+      1. Try metadata-first filter (direct article/section lookup)
+      2. If no direct match -> hybrid search across ALL collections
+      3. Rerank candidates with FlashRank
+      4. Map winning child chunks -> parent (full) documents
 
-    Returns up to `final_k` parent Documents.
+    Returns up to `final_k` parent Documents from any law source.
     """
-    # Stage 1: metadata filter
+    # Stage 1: metadata filter (direct lookup)
     direct = _metadata_filter(query)
     if direct:
-        # For direct lookups, still rerank if we got multiple articles
         if len(direct) > final_k:
             return _rerank(query, direct, top_k=final_k)
         return direct
 
-    # Stage 2: hybrid search on child chunks
-    candidates = _hybrid_search(query, top_k=20)
+    # Stage 2: hybrid search across all collections
+    candidates = _multi_collection_hybrid_search(query, per_collection_k=10)
 
     if not candidates:
         return []
 
-    # Stage 3: rerank child chunks
+    # Stage 3: rerank all candidates together
     best_children = _rerank(query, candidates, top_k=final_k)
 
-    # Stage 4: map children → parent documents
-    parent_ids = list({doc.metadata.get("parent_id", "") for doc in best_children})
-    parents = _fetch_parents(parent_ids)
+    # Stage 4: map children -> parent documents
+    parents = []
+    seen_parents = set()
+
+    for doc in best_children:
+        source_type = doc.metadata.get("source_type", "constitution")
+        parent_id = doc.metadata.get("parent_id", "")
+
+        if parent_id in seen_parents:
+            continue
+        seen_parents.add(parent_id)
+
+        for coll in COLLECTIONS:
+            if coll["source_type"] == source_type:
+                parent_docs = _fetch_parents([parent_id], coll["parent"])
+                for pdoc in parent_docs:
+                    pdoc.metadata["source_type"] = source_type
+                parents.extend(parent_docs)
+                break
 
     if parents:
-        return parents
+        return parents[:final_k]
 
-    # Fallback: if parent lookup fails, return the child chunks directly
+    # Fallback: return child chunks directly
     return best_children

@@ -14,12 +14,11 @@ import json
 import os
 
 import chromadb
-from langchain_ollama import OllamaEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
 from app.config import (
-    OLLAMA_BASE_URL,
     EMBED_MODEL,
     CHROMA_COLLECTION,
     CHROMA_PARENT_COLLECTION,
@@ -166,9 +165,13 @@ def ingest():
         print("  [WARN] No documents to ingest.")
         return
 
-    print(f"  Embedding with {EMBED_MODEL} via {OLLAMA_BASE_URL}...")
-    print("  This may take a few minutes on first run...")
-    embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+    print(f"  Embedding with {EMBED_MODEL} (HuggingFace, local)...")
+    print("  This may take a few minutes on first run (model download)...")
+    embeddings = HuggingFaceEmbeddings(
+        model_name=EMBED_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
 
     # ── Store parent documents ──────────────────────────────
     print(f"  Ingesting {len(parent_docs)} parent documents...")
@@ -190,7 +193,7 @@ def ingest():
     )
     print(f"  [OK] Child collection '{CHROMA_COLLECTION}' ready.")
 
-    print(f"\n  ✅ Ingestion complete: {len(parent_docs)} articles → {len(child_docs)} chunks.")
+    print(f"\n  [OK] Ingestion complete: {len(parent_docs)} articles -> {len(child_docs)} chunks.")
 
 
 if __name__ == "__main__":
